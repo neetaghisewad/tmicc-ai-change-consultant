@@ -1,126 +1,34 @@
 # =============================================================================
 # TMICC Change Management Consultant
 # A transparent, rule-based Streamlit prototype. No paid API or AI model.
+#
+# This file contains only the screens (the user interface).
+# The rules live in the "consultant" folder:
+#   consultant/documents.py  - reads the five Word documents
+#   consultant/retrieval.py  - searches them
+#   consultant/knowledge.py  - general framework content (edit text here)
+#   consultant/questions.py  - question type and framework routing rules
+#   consultant/answers.py    - builds the source-labelled answer
 # =============================================================================
 
-import os
 import re
-import zipfile
-import xml.etree.ElementTree as ET
 from collections import Counter
 
 import streamlit as st
 
+from consultant import answers, documents, knowledge, retrieval
+
 APP_TITLE = "TMICC Change Management Consultant"
 
-# Keep these five Word documents in the SAME GitHub folder as app.py.
-KNOWLEDGE_DOCUMENTS = [
-    {"file": "KOTTER 8.docx", "topic": "Kotter"},
-    {"file": "PFEFFER NETWORK MAP.docx", "topic": "Pfeffer"},
-    {"file": "RITTI.docx", "topic": "Ritti & Levy"},
-    {"file": "SCHEIN THREE.docx", "topic": "Schein"},
-    {"file": "TMICC ORCHESTRATOR CONTEXT DOCUMENT.docx", "topic": "TMICC context"},
-]
+# Keep the five Word documents in the SAME GitHub folder as app.py.
+# The list of files is defined in consultant/documents.py.
+KNOWLEDGE_DOCUMENTS = documents.KNOWLEDGE_DOCUMENTS
 
-FRAMEWORKS = {
-    "Kotter": {
-        "title": "Kotter — change readiness and the 8-step model",
-        "focus": "Whether the organisation is ready for change and which stage needs attention.",
-        "summary": (
-            "Kotter's model moves from creating urgency and building a guiding coalition "
-            "through communicating a vision, enabling action, generating wins, sustaining "
-            "acceleration and anchoring change in culture."
-        ),
-        "benefits": [
-            "Provides a clear sequence and practical milestones.",
-            "Highlights communication, leadership alignment and visible wins.",
-            "Helps identify where momentum may be breaking down.",
-        ],
-        "limitations": [
-            "Can appear too linear for complex, iterative change.",
-            "May understate employee-led change and local differences.",
-            "Progress through the steps is not always easy to measure objectively.",
-        ],
-        "keywords": [
-            "urgency", "resistance", "communication", "vision", "leadership",
-            "coalition", "milestone", "momentum", "readiness", "adoption",
-            "training", "change fatigue", "buy-in", "implementation",
-        ],
-    },
-    "Pfeffer": {
-        "title": "Pfeffer — power, influence and dependencies",
-        "focus": "Who holds influence, resources, information and approval power.",
-        "summary": (
-            "A power and influence lens examines dependencies, informal networks, "
-            "control of scarce resources, decision rights and the people who can enable "
-            "or block a change."
-        ),
-        "benefits": [
-            "Makes informal influence and hidden dependencies visible.",
-            "Helps identify sponsors, blockers and critical relationships.",
-            "Supports a practical stakeholder-engagement plan.",
-        ],
-        "limitations": [
-            "Power and influence can be difficult to measure reliably.",
-            "May overemphasise politics if used without an ethical lens.",
-            "Can overlook shared purpose, trust and intrinsic motivation.",
-        ],
-        "keywords": [
-            "power", "influence", "stakeholder", "dependency", "dependencies",
-            "approval", "resources", "network", "sponsor", "blocker",
-            "decision", "authority", "politics", "informal", "control",
-        ],
-    },
-    "Ritti & Levy": {
-        "title": "Ritti & Levy — organisational politics and informal rules",
-        "focus": "How interests, perceived winners and losers, and unwritten rules shape behaviour.",
-        "summary": (
-            "This lens considers the informal side of organisations: unwritten rules, "
-            "competing interests, organisational politics, and how people respond when "
-            "they believe a change may benefit or disadvantage them."
-        ),
-        "benefits": [
-            "Surfaces concerns that formal organisation charts may miss.",
-            "Helps anticipate perceived losses, conflict and resistance.",
-            "Encourages attention to informal norms and everyday behaviour.",
-        ],
-        "limitations": [
-            "It can be tempting to interpret every disagreement as self-interest.",
-            "People's motives are difficult to infer without evidence.",
-            "Political analysis should be balanced with structural and cultural analysis.",
-        ],
-        "keywords": [
-            "winners", "losers", "unwritten", "rules", "politics", "conflict",
-            "interests", "incentives", "status", "identity", "territory",
-            "resistance", "informal", "fairness", "competition",
-        ],
-    },
-    "Schein": {
-        "title": "Schein — culture: artefacts, values and underlying assumptions",
-        "focus": "Whether the change aligns with or challenges the organisation's culture.",
-        "summary": (
-            "Schein's culture model distinguishes visible artefacts, espoused values and "
-            "deeper underlying assumptions. The deeper assumptions can strongly shape "
-            "behaviour while remaining difficult to see or discuss."
-        ),
-        "benefits": [
-            "Looks beyond formal messages to the assumptions driving behaviour.",
-            "Helps explain why people may reject a change that looks sensible on paper.",
-            "Connects leadership behaviour, everyday practices and stated values.",
-        ],
-        "limitations": [
-            "Underlying assumptions are difficult to observe directly.",
-            "Culture can vary across teams, sites and professional groups.",
-            "Culture change often takes time and cannot be delivered by communication alone.",
-        ],
-        "keywords": [
-            "culture", "values", "assumptions", "beliefs", "identity",
-            "norms", "rituals", "artefacts", "artifacts", "behaviour",
-            "behavior", "trust", "psychological safety", "legacy", "subculture",
-        ],
-    },
-}
+# Framework summaries, benefits, limitations and keywords.
+# They are defined once, in consultant/knowledge.py, and shared by every tab.
+FRAMEWORKS = knowledge.FRAMEWORKS
 
+# Keyword themes used by the "Analyse a challenge" tab.
 THEMES = {
     "Urgency and readiness": {
         "keywords": ["urgent", "urgency", "deadline", "readiness", "pressure", "fatigue", "adoption"],
@@ -147,51 +55,39 @@ THEMES = {
 def normalise(text):
     return re.sub(r"\s+", " ", str(text or "")).strip()
 
-def extract_docx_text(path):
-    """Extract readable text from a .docx using Python's built-in libraries."""
-    try:
-        with zipfile.ZipFile(path, "r") as archive:
-            xml_bytes = archive.read("word/document.xml")
-        root = ET.fromstring(xml_bytes)
-        namespace = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
-        paragraphs = []
-        for paragraph in root.findall(".//w:p", namespace):
-            parts = [node.text or "" for node in paragraph.findall(".//w:t", namespace)]
-            paragraph_text = normalise("".join(parts))
-            if paragraph_text:
-                paragraphs.append(paragraph_text)
-        return "\n".join(paragraphs), None
-    except FileNotFoundError:
-        return "", "File not found in the same folder as app.py."
-    except (zipfile.BadZipFile, KeyError, ET.ParseError, OSError) as exc:
-        return "", f"Could not read this Word file: {exc}"
-
 @st.cache_data(show_spinner=False)
 def load_knowledge():
-    documents = []
-    for item in KNOWLEDGE_DOCUMENTS:
-        text, error = extract_docx_text(item["file"])
-        documents.append({
-            "file": item["file"],
-            "topic": item["topic"],
-            "text": text,
-            "error": error,
-            "characters": len(text),
-        })
-    return documents
+    """Read the five Word documents (cached so it happens once)."""
+    return documents.load_documents()
+
+
+@st.cache_resource(show_spinner=False)
+def load_knowledge_base():
+    """Documents plus the search index used by the chat and the analysis."""
+    return answers.build_knowledge_base(load_knowledge())
+
 
 def keyword_score(text, keywords):
-    lowered = text.lower()
+    """Count how many keywords appear in the text.
+
+    Word endings are ignored, so "stakeholders" matches "stakeholder" and
+    "cultural" matches "culture".
+    """
+    text_stems = set(retrieval.tokenize(text))
     score = 0
     matched = []
     for word in keywords:
-        if re.search(r"\b" + re.escape(word.lower()) + r"\b", lowered):
+        word_stems = retrieval.tokenize(word)
+        if word_stems and all(item in text_stems for item in word_stems):
             score += 1
             matched.append(word)
     return score, matched
 
 def select_frameworks(challenge, change_type, stage, manual_choice, max_frameworks):
-    combined = f"{challenge} {change_type} {stage}"
+    # Only the words the user typed are scored. The dropdown labels are not
+    # searched for keywords (otherwise choosing "Implementation" would itself
+    # score points); the change type is handled by the explicit rule below.
+    combined = challenge
     scores = Counter()
     reasons = {name: [] for name in FRAMEWORKS}
 
@@ -227,28 +123,6 @@ def select_frameworks(challenge, change_type, stage, manual_choice, max_framewor
 
     return selected, scores, reasons
 
-def relevant_passages(document_text, query, max_passages=3):
-    """Return document sentences/paragraphs sharing words with the challenge."""
-    if not document_text.strip():
-        return []
-    query_words = {
-        word.lower() for word in re.findall(r"[A-Za-z][A-Za-z'-]{3,}", query)
-        if word.lower() not in {
-            "this", "that", "with", "from", "into", "there", "their", "about",
-            "which", "where", "when", "have", "will", "would", "could", "should",
-            "organisation", "organization", "change", "changes",
-        }
-    }
-    chunks = [normalise(part) for part in re.split(r"(?<=[.!?])\s+|\n+", document_text) if normalise(part)]
-    ranked = []
-    for chunk in chunks:
-        chunk_words = set(re.findall(r"[A-Za-z][A-Za-z'-]{3,}", chunk.lower()))
-        overlap = len(query_words & chunk_words)
-        if overlap:
-            ranked.append((overlap, chunk))
-    ranked.sort(key=lambda item: item[0], reverse=True)
-    return [chunk for _, chunk in ranked[:max_passages]]
-
 def build_actions(selected, challenge, stage):
     actions = []
     for name in selected:
@@ -283,6 +157,107 @@ def build_actions(selected, challenge, stage):
             unique.append(action)
     return unique[:9]
 
+# ---------------------------------------------------------------------------
+# "Ask the consultant" tab (chat)
+# ---------------------------------------------------------------------------
+
+def queue_question(text):
+    """Called when an example-question button is clicked."""
+    st.session_state["pending_question"] = text
+
+
+def clear_conversation():
+    st.session_state["chat_history"] = []
+
+
+def ask_consultant(question):
+    """Answer one question and add it to the conversation history.
+
+    The previous answer's analysis is passed in so that follow-up questions
+    such as "what are the risks of that?" keep their topic.
+    """
+    history = st.session_state.setdefault("chat_history", [])
+    previous = history[-1]["analysis"] if history else None
+    try:
+        answer = answers.answer_question(question, load_knowledge_base(), previous)
+        history.append({
+            "question": question,
+            "markdown": answer["markdown"],
+            "analysis": answer["analysis"],
+        })
+    except Exception as exc:  # never let one bad question break the app
+        history.append({
+            "question": question,
+            "markdown": (
+                "Sorry, I could not process that question because of an internal error "
+                f"(`{type(exc).__name__}`). Please try rephrasing it."
+            ),
+            "analysis": previous,
+        })
+
+
+def render_chat_tab():
+    st.header("Ask the consultant")
+    st.caption(
+        "Ask in your own words. Answers are assembled by rules from your five Word documents "
+        "and from built-in general guidance. Every statement is labelled with its source. "
+        "This is not an AI model."
+    )
+
+    knowledge_base = load_knowledge_base()
+    problems = [doc for doc in knowledge_base["documents"] if doc["error"]]
+    if problems:
+        st.error(
+            "Some documents could not be read, so answers will be incomplete: "
+            + ", ".join(doc["file"] for doc in problems)
+        )
+
+    history = st.session_state.setdefault("chat_history", [])
+
+    with st.expander("Example questions", expanded=not history):
+        for number, text in enumerate(knowledge.EXAMPLE_QUESTIONS):
+            st.button(text, key=f"example_{number}", on_click=queue_question, args=(text,))
+
+    # The conversation is drawn in this container, which sits above the
+    # question box even though it is filled in afterwards.
+    conversation = st.container()
+
+    with st.form("ask_form", clear_on_submit=True):
+        typed = st.text_area(
+            "Your question",
+            height=90,
+            placeholder="Example: How should TMICC manage resistance from the Ben & Jerry's board?",
+        )
+        submitted = st.form_submit_button("Ask")
+
+    question = st.session_state.pop("pending_question", None)
+    if submitted and normalise(typed):
+        question = normalise(typed)
+    if question:
+        ask_consultant(question)
+
+    with conversation:
+        if not history:
+            st.info("No questions yet. Type one below or pick an example above.")
+        for turn in history:
+            with st.chat_message("user"):
+                st.write(turn["question"])
+            with st.chat_message("assistant"):
+                st.markdown(turn["markdown"])
+
+    if history:
+        left, right = st.columns(2)
+        with left:
+            st.download_button(
+                "Download conversation (Markdown)",
+                data=answers.conversation_to_markdown(history),
+                file_name="tmicc_consultant_conversation.md",
+                mime="text/markdown",
+            )
+        with right:
+            st.button("Clear conversation", on_click=clear_conversation)
+
+
 def main():
     st.set_page_config(page_title=APP_TITLE, page_icon="🧭", layout="wide")
     st.title("🧭 " + APP_TITLE)
@@ -291,16 +266,23 @@ def main():
     with st.sidebar:
         st.subheader("About this app")
         st.write(
-            "Describe a change challenge. The app uses keyword rules to suggest frameworks "
-            "and searches the five Word documents for passages sharing words with your description."
+            "Ask a question or describe a change challenge. The app uses rules to choose "
+            "frameworks, searches the five Word documents for relevant passages, and "
+            "assembles a structured answer."
         )
-        st.info("No live AI model, API key or paid service is used. Framework selection is rule-based.")
+        st.info("No live AI model, API key or paid service is used. Everything is rule-based.")
+        st.subheader("Source labels")
+        st.markdown(knowledge.LEGEND)
         st.subheader("Frameworks")
         st.write("Kotter • Pfeffer • Ritti & Levy • Schein")
 
-    tab_analyse, tab_knowledge, tab_reference, tab_method = st.tabs([
-        "Analyse a challenge", "Knowledge base documents", "Framework reference", "How this app works"
+    tab_chat, tab_analyse, tab_knowledge, tab_reference, tab_method = st.tabs([
+        "Ask the consultant", "Analyse a challenge", "Knowledge base documents",
+        "Framework reference", "How this app works",
     ])
+
+    with tab_chat:
+        render_chat_tab()
 
     with tab_analyse:
         st.header("Describe the change challenge")
@@ -407,38 +389,48 @@ def main():
             )
 
             st.subheader("6. Relevant passages from the knowledge documents")
-            knowledge = load_knowledge()
-            any_passage = False
-            query = f"{analysis['challenge']} {analysis['change_type']} {analysis['stage']}"
-            for doc in knowledge:
-                if doc["topic"] not in analysis["selected"] and doc["topic"] != "TMICC context":
-                    continue
+            st.caption(
+                "All five documents are searched using the words in your description. "
+                "Each passage is quoted exactly, with its file and section."
+            )
+            knowledge_base = load_knowledge_base()
+            for doc in knowledge_base["documents"]:
                 if doc["error"]:
                     st.caption(f"{doc['file']}: {doc['error']}")
-                    continue
-                passages = relevant_passages(doc["text"], query)
-                if passages:
-                    any_passage = True
-                    st.markdown(f"**{doc['topic']} — source: `{doc['file']}`**")
-                    for passage in passages:
-                        st.markdown(f"> {passage}")
-            if not any_passage:
-                st.info(
-                    "No relevant passage was found by the simple word-overlap search. "
-                    "The document may still contain useful information; try adding specific terms from it."
+            results = retrieval.search(knowledge_base["index"], analysis["challenge"], max_results=10)
+            shown = answers.relevant(results, limit=8)
+            for result in shown:
+                passage = result["passage"]
+                st.markdown(f"> {passage['text']}")
+                st.caption(
+                    f"Source: {documents.source_label(passage)}  •  matched words: "
+                    + ", ".join(result["matched"])
                 )
+            if not shown:
+                st.info(
+                    "No relevant passage was found by the keyword search. "
+                    "The documents may still contain useful information; try adding specific terms from them."
+                )
+            missing = retrieval.words_not_in_documents(knowledge_base["index"], analysis["challenge"])
+            if missing:
+                st.caption("Words in your description that appear nowhere in the documents: " + ", ".join(missing[:8]))
 
     with tab_knowledge:
         st.header("Knowledge base documents")
         st.write("The Word files must be stored in the repository's root folder beside `app.py`.")
-        knowledge = load_knowledge()
-        for doc in knowledge:
+        loaded_documents = load_knowledge()
+        for doc in loaded_documents:
             if doc["error"]:
                 st.error(f"**{doc['file']}** — {doc['error']}")
             elif doc["characters"] == 0:
                 st.warning(f"**{doc['file']}** — opened, but no text was extracted.")
             else:
-                st.success(f"**{doc['file']}** — loaded ({doc['characters']:,} characters)")
+                st.success(
+                    f"**{doc['file']}** — loaded ({doc['characters']:,} characters, "
+                    f"{len(doc['passages'])} searchable passages)"
+                )
+                if doc["warning"]:
+                    st.warning(doc["warning"])
                 with st.expander(f"Preview: {doc['topic']}"):
                     st.text(doc["text"][:5000])
                     if len(doc["text"]) > 5000:
@@ -462,21 +454,24 @@ def main():
     with tab_method:
         st.header("How this app works")
         st.markdown("""
-**1. Input:** You describe the challenge, change type and stage.
+**1. Reading the documents.** The five `.docx` files are read with Python's built-in libraries. Lines that Word stored separately are joined back into whole statements, and each statement remembers the heading it sits under (for example *RITTI.docx > DECISION 2 > LOSERS*).
 
-**2. Rule engine:** The app searches for predefined keywords and adds relevance points to frameworks. The score is a transparent heuristic, not a validated scientific measure.
+**2. Understanding the question.** Rules look for words and phrases to decide the type of question (advice, diagnosis, plan, comparison, risks and benefits, stakeholders, a factual question, and so on). A question worded as a follow-up ("what are the risks of that?") reuses the topic of the previous one.
 
-**3. Framework selection:** The highest-scoring frameworks are suggested, or you can choose them manually.
+**3. Choosing frameworks.** Each framework scores points when it is named, when a routing topic or keyword matches, and when the best-matching passages come from its own document. One clear fit is used alone; two are combined; if none fits, the app says so and does not force one.
 
-**4. Report:** The app displays selection reasons, a structured diagnosis, actions, benefits and limitations.
+**4. Searching the documents.** All five documents are searched with a standard keyword-ranking formula (BM25). Word endings are ignored ("stakeholders" matches "stakeholder"), known abbreviations are expanded ("TSA", "B&J"), and closely related words are searched at a lower weight.
 
-**5. Document search:** The app extracts text from the five `.docx` files and returns short passages with overlapping words. This is a simple word-overlap search, not semantic understanding.
-
+**5. Building the answer.** The layout depends on the type of question. Every statement carries one of three labels:
+""")
+        st.markdown(knowledge.LEGEND)
+        st.markdown("""
 **Important limitations**
-- The app does not use a live AI model and does not independently understand the organisation.
-- The selected framework and recommendations depend on the words entered.
-- The document search may miss relevant passages that use different wording.
-- Human review and evidence from TMICC are required before acting on recommendations.
+- This is a rule-based tool. It does not use an AI model and does not understand language the way a person or a large language model does.
+- It matches words, so a question phrased in unusual terms may be misclassified or may miss relevant passages.
+- It never writes its own statements about TMICC. If the documents do not cover something, it says so and offers only general guidance.
+- Timelines, owners and success measures in roadmaps are illustrative general guidance; the documents contain none.
+- The documents themselves have not been checked against outside sources. Human review is required before acting on any recommendation.
 """)
 
 if __name__ == "__main__":
