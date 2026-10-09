@@ -182,7 +182,8 @@ def ask_consultant(question):
         answer = answers.answer_question(question, load_knowledge_base(), previous)
         history.append({
             "question": question,
-            "markdown": answer["markdown"],
+            "markdown": answer["markdown"],                               # with source labels
+            "plain": answer.get("plain_markdown", answer["markdown"]),   # clean reading view
             "analysis": answer["analysis"],
         })
     except Exception as exc:  # never let one bad question break the app
@@ -200,9 +201,10 @@ def render_chat_tab():
     st.header("Ask the consultant")
     st.caption(
         "Ask in your own words. Answers are assembled by rules from your five Word documents "
-        "and from built-in general guidance. Every statement is labelled with its source. "
-        "This is not an AI model."
+        "and from built-in general guidance. Tick \"Show source labels\" in the sidebar to see "
+        "where each statement comes from. This is not an AI model."
     )
+    show_sources = bool(st.session_state.get("show_sources", False))
 
     knowledge_base = load_knowledge_base()
     problems = [doc for doc in knowledge_base["documents"] if doc["error"]]
@@ -243,14 +245,18 @@ def render_chat_tab():
             with st.chat_message("user"):
                 st.write(turn["question"])
             with st.chat_message("assistant"):
-                st.markdown(turn["markdown"])
+                st.markdown(turn["markdown"] if show_sources else turn.get("plain", turn["markdown"]))
 
     if history:
         left, right = st.columns(2)
         with left:
             st.download_button(
                 "Download conversation (Markdown)",
-                data=answers.conversation_to_markdown(history),
+                data=answers.conversation_to_markdown([
+                    {"question": turn["question"],
+                     "markdown": turn["markdown"] if show_sources else turn.get("plain", turn["markdown"])}
+                    for turn in history
+                ]),
                 file_name="tmicc_consultant_conversation.md",
                 mime="text/markdown",
             )
@@ -272,7 +278,16 @@ def main():
         )
         st.info("No live AI model, API key or paid service is used. Everything is rule-based.")
         st.subheader("Source labels")
-        st.markdown(knowledge.LEGEND)
+        show_sources = st.checkbox(
+            "Show source labels",
+            value=False,
+            key="show_sources",
+            help="Marks each statement as quoted from your documents, an inference, or general guidance.",
+        )
+        if show_sources:
+            st.markdown(knowledge.LEGEND)
+        else:
+            st.caption("Off: answers read as plain statements. Tick the box to see where each one comes from.")
         st.subheader("Frameworks")
         st.write("Kotter • Pfeffer • Ritti & Levy • Schein")
 
@@ -462,7 +477,7 @@ def main():
 
 **4. Searching the documents.** All five documents are searched with a standard keyword-ranking formula (BM25). Word endings are ignored ("stakeholders" matches "stakeholder"), known abbreviations are expanded ("TSA", "B&J"), and closely related words are searched at a lower weight.
 
-**5. Building the answer.** The layout depends on the type of question. Every statement carries one of three labels:
+**5. Building the answer.** The layout depends on the type of question, and every answer opens with a short direct answer. Behind the scenes every statement is one of three kinds. Tick **Show source labels** in the sidebar to see them marked in the chat:
 """)
         st.markdown(knowledge.LEGEND)
         st.markdown("""

@@ -1208,15 +1208,22 @@ def answer_question(question, kb, previous=None):
         "analysis": analysis,
         "show_legend": analysis["type"] in TYPES_WITH_LEGEND,
     }
-    answer["markdown"] = render_markdown(answer)
+    answer["markdown"] = render_markdown(answer)                          # with source labels
+    answer["plain_markdown"] = render_markdown(answer, show_sources=False)  # clean reading view
     return answer
 
 
-def _render_item(item, indent=0, seen=None):
+def _without_quote_marks(text):
+    return str(text).replace("“", "").replace("”", "")
+
+
+def _render_item(item, indent=0, seen=None, show_sources=True):
     """Render one item (and its children) as Markdown bullet lines.
 
     `seen` collects inference texts already shown in the section, so the same
     explanation is not printed under every bullet.
+    With show_sources=False the source label, quotation marks and file
+    reference are left out, so the answer reads as plain statements.
     """
     seen = seen if seen is not None else set()
     if item["label"] == INF:
@@ -1224,19 +1231,28 @@ def _render_item(item, indent=0, seen=None):
             return []
         seen.add(item["text"])
     prefix = "  " * indent + "- "
-    label = knowledge.LABEL_TEXT.get(item["label"], "")
-    text = f"{label} — {item['text']}" if label else item["text"]
-    if item["source"]:
-        text += f" *({item['source']})*"
+    if show_sources:
+        label = knowledge.LABEL_TEXT.get(item["label"], "")
+        text = f"{label} — {item['text']}" if label else item["text"]
+        if item["source"]:
+            text += f" *({item['source']})*"
+    else:
+        text = _without_quote_marks(item["text"])
+        # "1. Cultural: ..." would otherwise turn into a nested numbered list.
+        text = re.sub(r"^(\d+)\.", r"\1\\.", text)
+        # Keep the framework name beside general advice, but not file references.
+        if item["source"] and item["label"] == GEN:
+            text += f" *({item['source']})*"
     lines = [prefix + text]
     for child in item["children"]:
-        lines.extend(_render_item(child, indent + 1, seen))
+        lines.extend(_render_item(child, indent + 1, seen, show_sources))
     return lines
 
 
-def _render_table(table):
+def _render_table(table, show_sources=True):
     def clean(cell):
-        return str(cell).replace("|", "/").replace("\n", " ")
+        text = str(cell).replace("|", "/").replace("\n", " ")
+        return text if show_sources else _without_quote_marks(text)
     lines = ["| " + " | ".join(table["headers"]) + " |",
              "|" + "|".join(["---"] * len(table["headers"])) + "|"]
     for row in table["rows"]:
@@ -1244,23 +1260,35 @@ def _render_table(table):
     return lines
 
 
-def render_markdown(answer):
-    """Turn an answer into Markdown text for the chat window or a download."""
+def render_markdown(answer, show_sources=True):
+    """Turn an answer into Markdown text for the chat window or a download.
+
+    show_sources=True  - every statement carries its source label
+                         (document / inference / general guidance).
+    show_sources=False - a clean reading view without labels or file names.
+    """
+    label_marks = tuple(knowledge.LABEL_TEXT.values())
     lines = [answer["opening"], ""]
     for section in answer["sections"]:
         lines.append(f"#### {section['title']}")
-        if section["intro"]:
-            lines.extend([section["intro"], ""])
+        intro = section["intro"]
+        if intro and not show_sources and intro.startswith(label_marks):
+            intro = ""  # this introduction only explains the labels
+        if intro:
+            lines.extend([intro, ""])
         if section["table"]:
-            lines.extend(_render_table(section["table"]))
+            lines.extend(_render_table(section["table"], show_sources))
             lines.append("")
         seen_inferences = set()
         for item in section["items"]:
-            lines.extend(_render_item(item, 0, seen_inferences))
+            lines.extend(_render_item(item, 0, seen_inferences, show_sources))
         if section["note"]:
-            lines.extend(["", f"{knowledge.LABEL_TEXT[INF]} — {section['note']}"])
+            if show_sources:
+                lines.extend(["", f"{knowledge.LABEL_TEXT[INF]} — {section['note']}"])
+            else:
+                lines.extend(["", section["note"]])
         lines.append("")
-    if answer["show_legend"]:
+    if answer["show_legend"] and show_sources:
         lines.extend(["---", knowledge.LEGEND])
     return "\n".join(lines).strip()
 

@@ -16,13 +16,15 @@ The four frameworks are Kotter (change readiness), Pfeffer (power and networks),
 
 ## Where every statement comes from
 
-Each line of an answer carries one of three labels:
+Every answer opens with a short direct answer. Each line of an answer is one of three kinds:
 
 | Label | Meaning |
 |---|---|
 | 📄 From your documents | Quoted word for word from one of the five Word files, with file and section. |
 | 🔎 Inference | A rule linking a quoted passage to a framework idea. Plausible, not proven. |
 | 📘 General guidance | Standard change-management practice. Not stated in the documents. |
+
+By default the chat shows a clean reading view without these labels. Tick **Show source labels** in the sidebar to see them.
 
 The app never writes its own statements about TMICC. If the documents do not cover a question, it says so. Timelines, owners and success measures in roadmaps are always general guidance, because the documents contain none.
 
