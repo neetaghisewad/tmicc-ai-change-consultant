@@ -501,12 +501,145 @@ def opening_line(analysis, description):
 
 
 # ---------------------------------------------------------------------------
+# The "Short answer" that opens every reply
+# ---------------------------------------------------------------------------
+# Each function returns a few items that answer the question directly, before
+# any detail about frameworks. They follow the same rules as everything else:
+# TMICC content is quoted, general advice is labelled as general guidance.
+
+def _joined_quotes(passages, limit=4):
+    return "; ".join(quote(passage) for passage in passages[:limit])
+
+
+def _sentence_list(texts):
+    """Turn ["Do a.", "Do b."] into "(1) Do a; (2) Do b." """
+    parts = [f"({number}) {text.rstrip('.')}" for number, text in enumerate(texts, start=1)]
+    return "; ".join(parts) + "."
+
+
+def decision_summary_items(decision):
+    """Who gains, who loses and who is undecided, quoted from the payoff map."""
+    items = []
+    groups = [("loser", "Most likely to resist (listed as losers)"),
+              ("fence_sitter", "Undecided (listed as fence-sitters)"),
+              ("winner", "Expected to gain (listed as winners)"),
+              ("strategy", "Approach proposed in your notes")]
+    for role, title in groups:
+        members = [passage for passage in decision if passage_role(passage) == role]
+        if members:
+            items.append(make_item(DOC, f"{title}: {_joined_quotes(members)}", members[0]["file"]))
+    return items
+
+
+def short_answer_advice(kb, analysis):
+    items = []
+    themes = analysis["themes"]
+    if len(themes) >= 2:
+        # Several topics: one leading action for each.
+        for key in themes:
+            theme = knowledge.THEMES[key]
+            items.append(general_item(f"{theme['label'].capitalize()}: {theme['actions'][0]['text']}"))
+        return items
+    for key in themes[:1]:
+        items.append(general_item("In general: " + knowledge.THEMES[key]["diagnosis"]))
+    top = relevant(analysis["results"], limit=1)
+    if top:
+        passage = top[0]["passage"]
+        items.append(make_item(DOC, "Most relevant statement: " + quote(passage), documents.source_label(passage)))
+    actions = [action["text"] for action in collect_actions(analysis, per_source=3)[:3]]
+    if actions:
+        items.append(general_item("Recommended first steps: " + _sentence_list(actions)))
+    return items
+
+
+def short_answer_diagnosis(kb, analysis, tensions, specific):
+    items = []
+    if specific:
+        top = relevant(analysis["results"], limit=2)
+        for result in top:
+            items.append(make_item(DOC, quote(result["passage"]), documents.source_label(result["passage"])))
+    elif tensions:
+        labels = ", ".join("“" + tension["label"] + "”" for tension in tensions if tension["label"])
+        items.append(make_item(
+            DOC, f"Your context document names {len(tensions)} key tensions: {labels}. It does not rank them.",
+            tensions[0]["file"]))
+    for key in analysis["themes"][:1]:
+        items.append(general_item("In general: " + knowledge.THEMES[key]["diagnosis"]))
+    return items
+
+
+def short_answer_plan(kb, analysis, decision):
+    items = []
+    strategy = [passage for passage in decision if passage_role(passage) == "strategy"]
+    if strategy:
+        items.append(make_item(DOC, "Approach proposed in your notes: " + quote(strategy[0]),
+                               documents.source_label(strategy[0])))
+    actions = collect_actions(analysis)
+    steps = []
+    for number, phase in enumerate(knowledge.PHASES):
+        first = next((action for action in actions if action["phase"] == number), None)
+        if first:
+            steps.append(f"{phase['name'].split('. ', 1)[-1]} ({phase['timing'].lower()}): {first['text'].rstrip('.')}")
+    if steps:
+        items.append(general_item("The plan in outline: " + "; ".join(steps) + "."))
+    return items
+
+
+def short_answer_risks(kb, analysis, decision, actors):
+    items = decision_summary_items(decision)
+    if not items:
+        items = short_answer_items(analysis, actors, [])
+    general = []
+    for key in analysis["themes"]:
+        general.extend(knowledge.THEMES[key]["risks"])
+    for name in analysis["frameworks"]:
+        general.extend(knowledge.FRAMEWORKS[name]["risks"])
+    if general and (decision or actors):
+        items.append(general_item(f"A common risk with this kind of change: {general[0]['risk']} "
+                                  f"Usual mitigation: {general[0]['mitigation']}"))
+    return items
+
+
+def short_answer_stakeholders(kb, analysis, decision, actors, headings):
+    items = decision_summary_items(decision)
+    if not items:
+        items = short_answer_items(analysis, actors, [])
+    if not items and headings:
+        names = "; ".join("“" + heading + "”" for heading in headings)
+        items.append(make_item(DOC, f"The network map lists {len(headings)} actors: {names}",
+                               questions._file_for("Pfeffer")))
+    return items
+
+
+def short_answer_compare(chosen):
+    items = [general_item("No single framework is best overall. Each answers a different question:")]
+    for name in chosen:
+        items.append(general_item(f"{name}: {knowledge.FRAMEWORKS[name]['key_question']}"))
+    return items
+
+
+def short_answer_framework_choice(chosen):
+    items = []
+    for name in chosen:
+        framework = knowledge.FRAMEWORKS[name]
+        items.append(make_item(INF, f"Use {name}. It is best suited to: {framework['best_for'].rstrip('.').lower()}."))
+    return items
+
+
+def with_short_answer(sections, items):
+    """Put the short answer first (only if there is something to say)."""
+    if items:
+        return [make_section("Short answer", items)] + sections
+    return sections
+
+
+# ---------------------------------------------------------------------------
 # One builder per question type
 # ---------------------------------------------------------------------------
 
 def build_advice(kb, analysis):
     """'How should we manage X?' - diagnosis, evidence, recommendations, risks."""
-    sections = [framework_section(kb, analysis)]
+    sections = []
     themes = analysis["themes"]
 
     evidence = evidence_items(analysis["results"], limit=5)
@@ -553,8 +686,10 @@ def build_advice(kb, analysis):
     outcomes = outcome_items(analysis)
     if outcomes:
         sections.append(make_section("Expected outcomes and success measures", outcomes))
+    sections.append(framework_section(kb, analysis))
     sections.append(tension_section(kb, analysis))
     sections.append(gaps_section(analysis))
+    sections = with_short_answer(sections, short_answer_advice(kb, analysis))
     return opening_line(analysis, "a request for advice"), sections
 
 
@@ -628,13 +763,15 @@ def build_diagnosis(kb, analysis):
                                      note=knowledge.INFERENCE_RULES["probe"]))
     sections.append(tension_section(kb, analysis))
     sections.append(gaps_section(analysis))
+    sections = with_short_answer(sections, short_answer_diagnosis(kb, analysis, tensions, specific))
     return opening_line(analysis, "a diagnostic question"), sections
 
 
 def build_plan(kb, analysis):
     """'Build a roadmap / strategy / action plan.'"""
-    sections = [framework_section(kb, analysis)]
+    sections = []
     decision = find_decision(kb, analysis)
+    original_analysis = analysis
 
     anchors = []
     if decision:
@@ -661,8 +798,10 @@ def build_plan(kb, analysis):
         sections.append(make_section("Dependencies named in your documents", dependencies))
     sections.append(make_section("Risks and mitigations", risk_items(kb, analysis, decision)))
     sections.append(make_section("Expected outcomes and success measures", outcome_items(analysis, decision)))
+    sections.append(framework_section(kb, analysis))
     sections.append(tension_section(kb, analysis))
     sections.append(gaps_section(analysis))
+    sections = with_short_answer(sections, short_answer_plan(kb, original_analysis, decision))
     return opening_line(analysis, "a request for a plan"), sections
 
 
@@ -682,7 +821,6 @@ def build_risk_benefit(kb, analysis):
         items += [make_item(DOC, quote(heading), heading["file"]) for heading in headings]
         sections.append(make_section("Which intervention?", items))
 
-    sections.append(framework_section(kb, analysis))
     risk_section = make_section("Risks and mitigations", risk_items(kb, analysis, decision, limit=6))
     if not decision and not actors:
         risk_section["intro"] = ("No intervention was named, so any document passages below are simply "
@@ -702,8 +840,10 @@ def build_risk_benefit(kb, analysis):
         ]))
 
     sections.append(make_section("Expected benefits and success measures", outcome_items(analysis, decision)))
+    sections.append(framework_section(kb, analysis))
     sections.append(tension_section(kb, analysis))
     sections.append(gaps_section(analysis))
+    sections = with_short_answer(sections, short_answer_risks(kb, analysis, decision, actors))
     return opening_line(analysis, "a question about risks, stakeholder implications and benefits"), sections
 
 
@@ -713,6 +853,7 @@ def build_stakeholder(kb, analysis):
     decision = find_decision(kb, analysis)
     actors = find_actors(kb, analysis)
     sections.extend(decision_sections(decision))
+    all_headings = []
 
     for heading, block in actors[:4]:
         sections.append(make_section(f"Network map: {heading}", [document_item(passage) for passage in block]))
@@ -721,6 +862,7 @@ def build_stakeholder(kb, analysis):
         headings = _unique([passage["heading"] for passage in kb["passages"]
                             if passage["topic"] == "Pfeffer" and passage["heading"]
                             and not passage["heading"].upper().startswith("BROKERAGE")])
+        all_headings = headings
         if headings:
             sections.append(make_section(
                 "Actors in your network map",
@@ -743,6 +885,8 @@ def build_stakeholder(kb, analysis):
         sections.append(make_section("Recommended actions", actions))
     sections.append(tension_section(kb, analysis))
     sections.append(gaps_section(analysis))
+    sections = with_short_answer(
+        sections, short_answer_stakeholders(kb, analysis, decision, actors, all_headings))
     return opening_line(analysis, "a question about stakeholders, power and political support"), sections
 
 
@@ -789,6 +933,7 @@ def build_compare(kb, analysis):
         make_item("", "This comparison uses general descriptions built into the app. Your documents apply each "
                       "framework to TMICC but do not compare the frameworks with each other."),
     ]))
+    sections = with_short_answer(sections, short_answer_compare(chosen))
     return opening_line(analysis, "a request to compare frameworks"), sections
 
 
@@ -836,6 +981,7 @@ def build_framework_choice(kb, analysis):
     sections.append(make_section("What this framework would have you do first", first_moves))
     sections.append(tension_section(kb, analysis))
     sections.append(gaps_section(analysis))
+    sections = with_short_answer(sections, short_answer_framework_choice(chosen))
     return opening_line(analysis, "a question about which framework to use"), sections
 
 
@@ -867,6 +1013,57 @@ def build_explain_framework(kb, analysis):
     return opening_line(analysis, "a request to explain a framework"), sections
 
 
+# Words in a factual question, and the kind of passage that answers them.
+FACT_ASPECTS = [
+    (r"\b(want|wants|wanted|aim|aims|goal|goals|interest|interests|incentive|after|looking for)\b",
+     ["interest"], "What they want"),
+    (r"\b(control|controls|power|influence|leverage|hold|holds)\b",
+     ["controls", "power_base"], "What they control"),
+    (r"\b(depend|depends|dependent|dependency|dependencies|rely|relies|need|needs)\b",
+     ["dependency"], "Dependencies"),
+    (r"\b(risk|risks|danger|threat|gap|gaps|missing|hole)\b",
+     ["risk", "structural_hole"], "Risks and gaps"),
+]
+
+
+def _after_label(passage):
+    """Return the text after a leading label: "Wants: margin ..." -> "margin ..."."""
+    text = passage["text"]
+    if passage["label"] and text.startswith(passage["label"] + ":"):
+        return text[len(passage["label"]) + 1:].strip()
+    return text
+
+
+def short_answer_items(analysis, actors, results):
+    """A direct answer at the top of a factual reply, made only of quotations.
+
+    For a named actor it states how the documents describe them and, if the
+    question asks what they want, control, depend on or risk, quotes that
+    line. Otherwise it quotes the single closest passage.
+    """
+    question = analysis["question"].lower()
+    items = []
+    for heading, block in actors[:2]:
+        source = block[0]["file"]
+        items.append(make_item(DOC, f"Listed in the network map as “{heading}”", source))
+        for pattern, roles, title in FACT_ASPECTS:
+            if not re.search(pattern, question):
+                continue
+            for passage in block:
+                if passage_role(passage) in roles:
+                    items.append(make_item(DOC, f"{title}: “{_after_label(passage)}”",
+                                           documents.source_label(passage)))
+    if not items and results:
+        best = results[0]["passage"]
+        # A "when" or "how many" question is best answered by a passage with a number in it.
+        if re.search(r"^\s*(when|what year|what date|how many|how much|how long)\b", question):
+            dated = [result["passage"] for result in results if re.search(r"\d", result["passage"]["text"])]
+            if dated:
+                best = dated[0]
+        items.append(make_item(DOC, "Closest statement: " + quote(best), documents.source_label(best)))
+    return items
+
+
 def build_fact(kb, analysis):
     """'Who is ...?', 'When was ...?' - answered from the documents only."""
     sections = []
@@ -895,6 +1092,10 @@ def build_fact(kb, analysis):
         closest = [document_item(result["passage"], with_inference=False) for result in results[:3]]
         sections.append(make_section("Closest passages (they do not answer the question)", closest))
         return opening_line(analysis, "a factual question"), sections
+
+    short = short_answer_items(analysis, actors, results)
+    if short:
+        sections.append(make_section("Short answer", short))
 
     shown = set()
     for heading, block in actors[:2]:
